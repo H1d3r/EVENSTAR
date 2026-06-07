@@ -5,11 +5,11 @@
 //
 // Description: Source file that contains the necessary routines to bypass
 // the Write Protect (WP) mitigation to allow supervisor-level procedures
-// to write into read-only pages
+// to write into read-only pages in kernel space
 //
 // Modifications:
 //  2026-05-12	Created
-//  2026-05-23  Updated
+//  2026-06-06  Updated
 // ========================================================================
 
 // ========================================================================
@@ -316,6 +316,208 @@ cleanup:
 	// Restore the original IRQL of the current processor
 	if (bIrqlRaised)
 		KeLowerIrql(kirqlOld);
+}
+
+_Use_decl_annotations_
+VOID __stdcall copy_memory_page_remapping(
+	VOID*       pDestination,
+	CONST VOID* pcSource,
+	DWORD_PTR   dwptrLength
+) {
+	// Init local variables
+	PVOID pNtoskrnl = nullptr;
+	PVOID pMmGetVirtualForPhysical = nullptr;
+	DWORD dwOffsetImm64 = 0;
+	QWORD qwMmPteBase = 0;
+	PMMPTE_HARDWARE pMmpteHardwarePte = nullptr;
+	PMMPTE_HARDWARE pMmpteHardwarePde = nullptr;
+	PMMPTE_HARDWARE pMmpteHardwarePpe = nullptr;
+	PMMPTE_HARDWARE pMmpteHardwarePxe = nullptr;
+	PVOID pReserved = nullptr;
+	PHYSICAL_ADDRESS physicalAddressLow; __stosb(reinterpret_cast<PUCHAR>(&physicalAddressLow), 0, sizeof(PHYSICAL_ADDRESS));
+	PHYSICAL_ADDRESS physicalAddressHigh; __stosb(reinterpret_cast<PUCHAR>(&physicalAddressHigh), 0, sizeof(PHYSICAL_ADDRESS));
+	PHYSICAL_ADDRESS physicalAddressSkipBytes; __stosb(reinterpret_cast<PUCHAR>(&physicalAddressSkipBytes), 0, sizeof(PHYSICAL_ADDRESS));
+	PMDL pMdl = nullptr;
+	PVOID pPage = nullptr;
+	NTSTATUS status = STATUS_SUCCESS;
+	KIRQL kirqlOld = 0;
+	BOOLEAN bIrqlRaised = false;
+	MMPTE_HARDWARE mmpteHardwareNew; __stosb(reinterpret_cast<PUCHAR>(&mmpteHardwareNew), 0, sizeof(MMPTE_HARDWARE));
+	MMPTE_HARDWARE mmpteHardwareOld; __stosb(reinterpret_cast<PUCHAR>(&mmpteHardwareOld), 0, sizeof(MMPTE_HARDWARE));
+	BOOLEAN bPfnSwapped = false;
+
+	// Check if the write will span a page boundary
+	if (ADDRESS_AND_SIZE_TO_SPAN_PAGES(pDestination, dwptrLength) > 1) {
+		goto cleanup;
+	}
+
+	// Get the nt image base address
+	RtlPcToFileHeader(reinterpret_cast<PVOID>(RtlFindExportedRoutineByName), &pNtoskrnl);
+	if (pNtoskrnl == nullptr) {
+		goto cleanup;
+	}
+
+	// Get the KVA of nt!MmGetVirtualForPhysical
+	pMmGetVirtualForPhysical = RtlFindExportedRoutineByName(pNtoskrnl, "MmGetVirtualForPhysical");
+	if (pMmGetVirtualForPhysical == nullptr) {
+		goto cleanup;
+	}
+
+	/*
+	0: kd> uf nt!MmGetVirtualForPhysical
+	nt!MmGetVirtualForPhysical:
+	fffff803`8ec6e980 488bc1               mov rax,rcx
+	fffff803`8ec6e983 48c1e80c             shr rax,0Ch
+	fffff803`8ec6e987 488d1440             lea rdx,[rax+rax*2]
+	fffff803`8ec6e98b 4803d2               add rdx,rdx
+	fffff803`8ec6e98e 48b80800000080b1ffff mov rax,0FFFFB18000000008h
+	fffff803`8ec6e998 488b04d0             mov rax,qword ptr [rax+rdx*8]
+	fffff803`8ec6e99c 48c1e019             shl rax,19h
+	fffff803`8ec6e9a0 48ba0000000080aeffff mov rdx,0FFFFAE8000000000h
+	fffff803`8ec6e9aa 48c1e219             shl rdx,19h
+	fffff803`8ec6e9ae 81e1ff0f0000         and ecx,0FFFh
+	fffff803`8ec6e9b4 482bc2               sub rax,rdx
+	fffff803`8ec6e9b7 48c1f810             sar rax,10h
+	fffff803`8ec6e9bb 4803c1               add rax,rcx
+	fffff803`8ec6e9be c3                   ret
+	*/
+	// This is not the correct way to find nt!MmPteBase, use nt!KdDebuggerDataBlock
+	dwOffsetImm64 = 0x22UL;
+
+	// Get the KVA of nt!MmPteBase
+	// Starting from 64-bit Windows 10 1607 Anniversary Update (RS1) Build 14393, the PML4 table auto-entry index is randomized at boot time as part of KASLR (earlier, index fixed at 0x1ED)
+	qwMmPteBase = *reinterpret_cast<PQWORD>(static_cast<PUCHAR>(pMmGetVirtualForPhysical) + dwOffsetImm64);
+
+	// Compute the KVA of the PTE for the write address
+	// BMI1 is only available since Haswell Intel microarchitecture (2013)
+	/*
+	0: kd> uf nt!MiGetPteAddress
+	nt!MiGetPteAddress:
+	fffff803`8ea376c0 48c1e909             shr rcx,9
+	fffff803`8ea376c4 48b8f8ffffff7f000000 mov rax,7FFFFFFFF8h
+	fffff803`8ea376ce 4823c8               and rcx,rax
+	fffff803`8ea376d1 48b80000000080aeffff mov rax,0FFFFAE8000000000h
+	fffff803`8ea376db 4803c1               add rax,rcx
+	fffff803`8ea376de c3                   ret
+	*/
+	pMmpteHardwarePte = reinterpret_cast<PMMPTE_HARDWARE>(_andn_u64(0x7ULL, qwMmPteBase + __ull_rshift(__ll_lshift(reinterpret_cast<QWORD>(pDestination), 0x10), 0x19)));
+
+	// Compute the KVA of the PDE for the write address
+	/*
+	0: kd> uf nt!MiGetPdeAddress
+	nt!MiGetPdeAddress:
+	fffff803`8ea12470 48c1e912             shr rcx,12h
+	fffff803`8ea12474 81e1f8ffff3f         and ecx,3FFFFFF8h
+	fffff803`8ea1247a 48b800000040d7aeffff mov rax,0FFFFAED740000000h
+	fffff803`8ea12484 4803c1               add rax,rcx
+	fffff803`8ea12487 c3                   ret
+	*/
+	pMmpteHardwarePde = reinterpret_cast<PMMPTE_HARDWARE>(_andn_u64(0x7ULL, qwMmPteBase + __ull_rshift(__ll_lshift(reinterpret_cast<QWORD>(pMmpteHardwarePte), 0x10), 0x19)));
+
+	// Compute the KVA of the PDPTE for the write address
+	pMmpteHardwarePpe = reinterpret_cast<PMMPTE_HARDWARE>(_andn_u64(0x7ULL, qwMmPteBase + __ull_rshift(__ll_lshift(reinterpret_cast<QWORD>(pMmpteHardwarePde), 0x10), 0x19)));
+
+	// Compute the KVA of the PML4E for the write address
+	pMmpteHardwarePxe = reinterpret_cast<PMMPTE_HARDWARE>(_andn_u64(0x7ULL, qwMmPteBase + __ull_rshift(__ll_lshift(reinterpret_cast<QWORD>(pMmpteHardwarePpe), 0x10), 0x19)));
+
+	// Reserve a memory buffer in KVAS using system PTEs
+	pReserved = MmAllocateMappingAddressEx(PAGE_SIZE, __POOLTAG__, 0);
+	if (pReserved == nullptr) {
+		goto cleanup;
+	}
+
+	// Allocate nonpaged physical memory pages to build an MDL
+	// NOTE: When HVCI is enabled, dynamic allocation of executable memory is no longer possible
+	physicalAddressHigh.QuadPart = MAXULONG64;
+	pMdl = MmAllocatePagesForMdlEx(physicalAddressLow, physicalAddressHigh, physicalAddressSkipBytes, PAGE_SIZE, MmCached, MM_ALLOCATE_FULLY_REQUIRED);
+	if (pMdl == nullptr) {
+		goto cleanup;
+	}
+
+	// Map the MDL in the reserved memory buffer
+	pPage = MmMapLockedPagesWithReservedMapping(pReserved, __POOLTAG__, pMdl, MmCached);
+	if (pPage == nullptr) {
+		goto cleanup;
+	}
+
+	// Set the protection type for the mapping to RW
+	status = MmProtectMdlSystemAddress(pMdl, PAGE_READWRITE);
+	if (!NT_SUCCESS(status)) {
+		goto cleanup;
+	}
+
+	// Clone the original RO page into the newly allocated 4 KB RW page
+	__movsb(static_cast<PUCHAR>(pPage), static_cast<UCHAR const*>(PAGE_ALIGN(pDestination)), PAGE_SIZE);
+
+	// Write into RW page
+	__movsb(static_cast<PUCHAR>(pPage) + BYTE_OFFSET(pDestination), static_cast<UCHAR const*>(pcSource), dwptrLength);
+
+	// Raise the Interrupt Request Level (IRQL) of the current processor to DISPATCH_LEVEL
+	// This will prevent the thread scheduler from preempting the current thread
+	kirqlOld = KeRaiseIrqlToDpcLevel();
+	bIrqlRaised = true;
+
+	// Check if the PML4E is valid
+	if (!pMmpteHardwarePxe->Valid) {
+		goto cleanup;
+	}
+
+	// Check if the PDPTE is valid
+	if (!pMmpteHardwarePpe->Valid) {
+		goto cleanup;
+	}
+
+	// Check if the PDE is valid
+	// We do not support large pages at the moment
+	if (!pMmpteHardwarePde->Valid || pMmpteHardwarePde->LargePage) {
+		goto cleanup;
+	}
+
+	// Check if the PTE is valid
+	if (!pMmpteHardwarePte->Valid) {
+		goto cleanup;
+	}
+
+	// Swap the PFN in the PTE that maps the original RO page with the PFN in the PTE that maps the modified RW page
+	// WARNING: If the code / data page is protected by HLAT then the paging structure will be managed by the hypervisor
+	// WARNING: HyperGuard / Secure Kernel Patch Guard (SKPG) runs checks at random intervals and will bugcheck unless the original PFN is restored
+	mmpteHardwareOld = *pMmpteHardwarePte;
+	mmpteHardwareNew = mmpteHardwareOld;
+	mmpteHardwareNew.PageFrameNumber = MmGetMdlPfnArray(pMdl)[0];
+	if (_InterlockedCompareExchange64(reinterpret_cast<LONG64 volatile*>(pMmpteHardwarePte), *reinterpret_cast<LONG64*>(&mmpteHardwareNew), *reinterpret_cast<LONG64*>(&mmpteHardwareOld)) != *reinterpret_cast<LONG64*>(&mmpteHardwareOld)) {
+		goto cleanup;
+	}
+	bPfnSwapped = true;
+
+	// Invalidate any Translation Lookaside Buffer (TLB) entries for the target page
+	// Remember to flush the TLB on all logical processors by sending an IPI
+	__invlpg(pDestination); // INVLPG - Invalidate TLB Entries
+
+	// Cleanup
+cleanup:
+	// Restore the original IRQL of the current processor
+	if (bIrqlRaised)
+		KeLowerIrql(kirqlOld);
+
+	// Check if the PFN swapping wasn't successful
+	// Note that there is a memory leak on the success path
+	if (!bPfnSwapped) {
+		// Release the mapping
+		if (pPage)
+			MmUnmapReservedMapping(pPage, __POOLTAG__, pMdl);
+
+		// Free the physical page described by the MDL
+		if (pMdl)
+			MmFreePagesFromMdl(pMdl);
+
+		// Release the MDL
+		if (pMdl)
+			ExFreePool(pMdl);
+
+		// Free the reserved memory buffer
+		if (pReserved)
+			MmFreeMappingAddress(pReserved, __POOLTAG__);
+	}
 }
 
 #pragma endregion

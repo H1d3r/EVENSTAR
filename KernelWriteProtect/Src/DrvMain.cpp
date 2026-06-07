@@ -7,7 +7,7 @@
 //
 // Modifications:
 //  2026-04-13	Created
-//  2026-05-16  Updated
+//  2026-06-05  Updated
 // ========================================================================
 
 // ========================================================================
@@ -18,22 +18,22 @@
 #include "../Inc/WriteProtectBypass.h"
 
 // ========================================================================
+// Globals
+// ========================================================================
+
+#pragma region GLOBALS
+
+// RO global variable
+#pragma section(".rodata", read)
+__declspec(allocate(".rodata")) DWORD g_dwProtectedValue = 0xDEADBEEF;
+
+#pragma endregion
+
+// ========================================================================
 // Routines
 // ========================================================================
 
 #pragma region ROUTINES
-
-/// @brief DRIVER_UNLOAD callback routine that gets called to uninitialize the driver when it is unloaded
-/// @param pDriverObject Pointer to DRIVER_OBJECT structure representing the driver's driver object
-_IRQL_requires_(PASSIVE_LEVEL)
-EXTERN_C __declspec(code_seg("PAGE")) VOID __stdcall driver_unload(
-	_In_ PDRIVER_OBJECT pDriverObject
-) {
-	// Suppress W4 warning - C4100
-	UNREFERENCED_PARAMETER(pDriverObject);
-
-	DEBUG_PRINT("--- %s.sys Unloaded ---\n", __MODULE__);
-}
 
 /// @brief DRIVER_INITIALIZE callback routine that gets called to initialize the driver when it is loaded
 /// @param pDriverObject Pointer to DRIVER_OBJECT structure representing the driver's driver object
@@ -49,15 +49,36 @@ EXTERN_C __declspec(code_seg("INIT")) NTSTATUS __stdcall DriverEntry(
 	DEBUG_PRINT("%s: DriverObject = %p\n", __MODULE__, pDriverObject);
 	DEBUG_PRINT("%s: RegistryPath = %wZ\n", __MODULE__, puncRegistryPath);
 
-	// Set routine to be called on driver unload
-	pDriverObject->DriverUnload = static_cast<PDRIVER_UNLOAD>(driver_unload);
+	// This driver cannot be unloaded
+	// /DRIVER:WDM linker switch + no DRIVER_UNLOAD routine + no MM_PROTECT_DRIVER_SECTION_ALLOW_UNLOAD flag
 
-	// Write data into RO _KUSER_SHARED_DATA structure
+	DEBUG_PRINT("%s: g_dwProtectedValue KVA = 0x%p\n", __MODULE__, &g_dwProtectedValue);
+	DEBUG_PRINT("%s: g_dwProtectedValue original contents = 0x%I32X\n", __MODULE__, ReadULongNoFence(&g_dwProtectedValue));
+
+	// Mark the guest physical page containing g_dwProtectedValue as RO in the SLAT entry
+	NTSTATUS status = MmProtectDriverSection(&g_dwProtectedValue, 0, 0);
+	if (!NT_SUCCESS(status)) {
+		DEBUG_PRINT("%s: MmProtectDriverSection error = 0x%08X\n", __MODULE__, status);
+		return status;
+	}
+	DEBUG_PRINT("%s: g_dwProtectedValue protected by static KDP.\n", __MODULE__);
+	__debugbreak();
+
+	// Corrupt RO data page
 	BYTE byarrPayload[] = { 0x41, 0x41, 0x41, 0x41 };
-	QWORD qwKuserSharedData = 0xFFFFF78000000000ULL;
-	copy_memory_cr0_wp(reinterpret_cast<PVOID>(qwKuserSharedData + 0x738ULL), byarrPayload, sizeof(byarrPayload));
-	copy_memory_double_mapping(reinterpret_cast<PVOID>(qwKuserSharedData + 0x73CULL), byarrPayload, sizeof(byarrPayload));
-	copy_memory_pte(reinterpret_cast<PVOID>(qwKuserSharedData + 0x740ULL), byarrPayload, sizeof(byarrPayload));
+
+	//copy_memory_cr0_wp(&g_dwProtectedValue, byarrPayload, sizeof(byarrPayload));
+	//DEBUG_PRINT("%s: g_dwProtectedValue modified contents = 0x%I32X\n", __MODULE__, ReadULongNoFence(&g_dwProtectedValue));
+
+	//copy_memory_double_mapping(&g_dwProtectedValue, byarrPayload, sizeof(byarrPayload));
+	//DEBUG_PRINT("%s: g_dwProtectedValue modified contents = 0x%I32X\n", __MODULE__, ReadULongNoFence(&g_dwProtectedValue));
+
+	//copy_memory_pte(&g_dwProtectedValue, byarrPayload, sizeof(byarrPayload));
+	//DEBUG_PRINT("%s: g_dwProtectedValue modified contents = 0x%I32X\n", __MODULE__, ReadULongNoFence(&g_dwProtectedValue));
+
+	copy_memory_page_remapping(&g_dwProtectedValue, byarrPayload, sizeof(byarrPayload));
+	DEBUG_PRINT("%s: g_dwProtectedValue modified contents = 0x%I32X\n", __MODULE__, ReadULongNoFence(&g_dwProtectedValue));
+	__debugbreak();
 
 	return STATUS_SUCCESS;
 }

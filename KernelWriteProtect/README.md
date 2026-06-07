@@ -2,7 +2,7 @@
 
 ## Version
 
-- `v2.0.0`
+- `v3.0.0`
 
 ## Brief
 
@@ -12,55 +12,63 @@
 - `CPL: 0`
 - `OS: Windows`
 - `Language: C`
-- Sample code that demonstrates three techniques for writing into read-only pages in kernel space using `CR0.WP` manipulation, `MDL` double mapping, and `PTE` manipulation
+- Sample code that demonstrates four techniques for writing into read-only pages in kernel space using `CR0.WP` manipulation, `MDL` double mapping, `PTE` manipulation, and `PFN` remapping.
 
 ## Usage
 
 ```
-0: kd> vertarget
+1: kd> vertarget
 Windows 10 Kernel Version 26100 MP (2 procs) Free x64
+Product: WinNt, suite: TerminalServer SingleUserTS
 Edition build lab: 26100.1.amd64fre.ge_release.240331-1435
-Kernel base = 0xfffff801`ece00000 PsLoadedModuleList = 0xfffff801`edcf5150
-Debug session time: Mon May 18 11:32:44.468 2026 (UTC - 4:00)
-System Uptime: 0 days 1:46:43.304
+Kernel base = 0xfffff801`cb400000 PsLoadedModuleList = 0xfffff801`cc2f52d0
+Debug session time: Fri Jun  5 15:50:12.936 2026 (UTC - 4:00)
+System Uptime: 0 days 0:01:50.980
 
-0: kd> g
+1: kd> g
+KDFILES: Replacing '\??\C:\pub\KernelWriteProtect.sys' with 'C:\Users\winterknife\Desktop\CNO-Programs\EVENSTAR\KernelWriteProtect\Bin\x64\KernelWriteProtect.sys'.  File size 7KB.
+KdPullRemoteFile(FFFFAD0304FC5040): About to overwrite \??\C:\pub\KernelWriteProtect.sys and preallocate to 1a60
+KdPullRemoteFile(FFFFAD0304FC5040): Return from ZwCreateFile with status 0
+..
 [DBG]: +++ KernelWriteProtect.sys Loaded +++
-[DBG]: KernelWriteProtect.sys Built May 18 2026 11:31:17
-[DBG]: KernelWriteProtect: DriverObject = FFFFBD0FF0496E20
+[DBG]: KernelWriteProtect.sys Built Jun  5 2026 15:23:55
+[DBG]: KernelWriteProtect: DriverObject = FFFFAD0305316E10
 [DBG]: KernelWriteProtect: RegistryPath = \REGISTRY\MACHINE\SYSTEM\ControlSet001\Services\KernelWriteProtect
-[DBG]: --- KernelWriteProtect.sys Unloaded ---
+[DBG]: KernelWriteProtect: g_dwProtectedValue KVA = 0xFFFFF801625A4000
+[DBG]: KernelWriteProtect: g_dwProtectedValue original contents = 0xDEADBEEF
+[DBG]: KernelWriteProtect: g_dwProtectedValue protected by static KDP.
 Break instruction exception - code 80000003 (first chance)
-*******************************************************************************
-*                                                                             *
-*   You are seeing this message because you pressed either                    *
-*       CTRL+C (if you run console kernel debugger) or,                       *
-*       CTRL+BREAK (if you run GUI kernel debugger),                          *
-*   on your debugger machine's keyboard.                                      *
-*                                                                             *
-*                   THIS IS NOT A BUG OR A SYSTEM CRASH                       *
-*                                                                             *
-* If you did not intend to break into the debugger, press the "g" key, then   *
-* press the "Enter" key now.  This message might immediately reappear.  If it *
-* does, press "g" and "Enter" again.                                          *
-*                                                                             *
-*******************************************************************************
-nt!DbgBreakPointWithStatus:
-fffff801`ed2fb1b0 cc              int     3
+KernelWriteProtect_fffff801625a0000!DriverEntry+0xe0:
+fffff801`625a50e0 cc              int     3
 
-0: kd> !pte 0xFFFFF78000000738
-                                           VA fffff78000000738
-PXE at FFFFF2793C9E4F78    PPE at FFFFF2793C9EF000    PDE at FFFFF2793DE00000    PTE at FFFFF27BC0000000
-contains 0000000000286063  contains 0000000000285063  contains 0000000000284063  contains 8A00000000283121
-pfn 286       ---DA--KWEV  pfn 285       ---DA--KWEV  pfn 284       ---DA--KWEV  pfn 283       -G--A--KR-V
+1: kd> !pte g_dwProtectedValue
+                                           VA fffff801625a4000
+PXE at FFFFE673399CCF80    PPE at FFFFE673399F0028    PDE at FFFFE6733E005890    PTE at FFFFE67C00B12D20
+contains 00000000001D0063  contains 00000000001CF063  contains 0A0000011169D863  contains 89000001C0FDF121
+pfn 1d0       ---DA--KWEV  pfn 1cf       ---DA--KWEV  pfn 11169d    ---DA--KWEV  pfn 1c0fdf    -G--A--KR-V
 
-0: kd> db 0xFFFFF78000000738 LC
-fffff780`00000738  41 41 41 41 41 41 41 41-41 41 41 41              AAAAAAAAAAAA
+1: kd> dd g_dwProtectedValue L1
+fffff801`625a4000  deadbeef
+
+1: kd> g
+[DBG]: KernelWriteProtect: g_dwProtectedValue modified contents = 0x41414141
+Break instruction exception - code 80000003 (first chance)
+KernelWriteProtect_fffff801625a0000!DriverEntry+0x10a:
+fffff801`625a510a cc              int     3
+
+1: kd> !pte g_dwProtectedValue
+                                           VA fffff801625a4000
+PXE at FFFFE673399CCF80    PPE at FFFFE673399F0028    PDE at FFFFE6733E005890    PTE at FFFFE67C00B12D20
+contains 00000000001D0063  contains 00000000001CF063  contains 0A0000011169D863  contains 89000001BADC3121
+pfn 1d0       ---DA--KWEV  pfn 1cf       ---DA--KWEV  pfn 11169d    ---DA--KWEV  pfn 1badc3    -G--A--KR-V
+
+1: kd> dd g_dwProtectedValue L1
+fffff801`625a4000  41414141
 ```
 
 ## Tested OS Versions
 
-- `Windows 11 25H2 Build 26200 Revision 8246 64-bit`
+- `Windows 11 25H2 Build 26200 Revision 8457 64-bit`
 
 ## References
 
@@ -70,3 +78,10 @@ fffff780`00000738  41 41 41 41 41 41 41 41-41 41 41 41              AAAAAAAAAAAA
 4. [kernelhook](https://github.com/adrianyy/kernelhook)
 5. [Exploit Development: Leveraging Page Table Entries for Windows Kernel Exploitation](https://connormcgarr.github.io/pte-overwrites/)
 6. [g_CiOptions in a Virtualized World](https://trustedsec.com/blog/g_cioptions-in-a-virtualized-world)
+7. [Melting Down PatchGuard: Leveraging KPTI to Bypass Kernel Patch Protection](https://www.fortinet.com/blog/threat-research/melting-down-patchguard-leveraging-kpi-to-bypass-kernel-patch-protection)
+8. [The Swan Song for Driver Signature Enforcement Tampering](https://www.fortinet.com/blog/threat-research/driver-signature-enforcement-tampering)
+9. [Code Execution against Windows HVCI](https://datafarm-cybersecurity.medium.com/code-execution-against-windows-hvci-f617570e9df0)
+10. [Intel VT-rp - Part 1. remapping attack and HLAT](https://tandasat.github.io/blog/2023/07/05/intel-vt-rp-part-1.html)
+11. [Intel VT-rp - Part 2. paging-write and guest-paging verification](https://tandasat.github.io/blog/2023/07/31/intel-vt-rp-part-2.html)
+12. [HEXACON2023 - Bypassing the HVCI memory protection by Viviane Zwanger and Henning Braun](https://www.youtube.com/watch?v=WWvd2_jd0ZI)
+13. [BusterCall](https://github.com/zer0condition/BusterCall)

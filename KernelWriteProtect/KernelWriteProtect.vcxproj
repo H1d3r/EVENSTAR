@@ -57,7 +57,7 @@
       <WholeProgramOptimization>true</WholeProgramOptimization>
     </ClCompile>
     <Link>
-      <AdditionalOptions>/EMITPOGOPHASEINFO /NOVCFEATURE /NOCOFFGRPINFO /FILEALIGN:0x200 /PDBALTPATH:$(ProjectName).pdb /Brepro /RELEASE /EMITTOOLVERSIONINFO:NO %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/EMITPOGOPHASEINFO /NOVCFEATURE /NOCOFFGRPINFO /FILEALIGN:0x200 /PDBALTPATH:$(ProjectName).pdb /Brepro /RELEASE /EMITTOOLVERSIONINFO:NO /DRIVER:WDM %(AdditionalOptions)</AdditionalOptions>
       <EntryPointSymbol />
       <AdditionalDependencies>Ntoskrnl.lib</AdditionalDependencies>
       <GenerateDebugInformation>DebugFull</GenerateDebugInformation>

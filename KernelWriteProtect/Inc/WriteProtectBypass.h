@@ -7,7 +7,7 @@
 //
 // Modifications:
 //  2026-05-12	Created
-//  2026-05-15  Updated
+//  2026-06-03  Updated
 // ========================================================================
 
 // ========================================================================
@@ -87,7 +87,7 @@ EXTERN_C DECLSPEC_NOINLINE VOID __stdcall copy_memory_cr0_wp(
 	_In_                                DWORD_PTR   dwptrLength
 );
 
-/// @brief Copies the contents of a source memory block to a destination memory block with write protect bypass using double mapping
+/// @brief Copies the contents of a source memory block to a destination memory block with write protect bypass using MDL double mapping
 /// @param pDestination Pointer to the destination memory block to copy the bytes to
 /// @param pcSource Pointer to the source memory block to copy the bytes from
 /// @param dwptrLength Number of bytes to copy from the source to the destination
@@ -107,6 +107,17 @@ EXTERN_C DECLSPEC_NOINLINE VOID __stdcall copy_memory_pte(
 	_Out_writes_bytes_all_(dwptrLength) VOID*       pDestination,
 	_In_reads_bytes_(dwptrLength)       CONST VOID* pcSource,
 	_In_                                DWORD_PTR   dwptrLength
+);
+
+/// @brief Copies the contents of a source memory block to a destination memory block with write protect bypass using PFN remapping
+/// @param pDestination Pointer to the destination memory block to copy the bytes to
+/// @param pcSource Pointer to the source memory block to copy the bytes from
+/// @param dwptrLength Number of bytes to copy from the source to the destination
+_IRQL_requires_max_(APC_LEVEL)
+EXTERN_C DECLSPEC_NOINLINE VOID __stdcall copy_memory_page_remapping(
+    _Out_writes_bytes_all_(dwptrLength) VOID*       pDestination,
+    _In_reads_bytes_(dwptrLength)       CONST VOID* pcSource,
+    _In_                                DWORD_PTR   dwptrLength
 );
 
 #pragma endregion
